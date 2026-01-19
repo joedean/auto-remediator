@@ -39,6 +39,24 @@ export const IssueToFixInputSchema = z.object({
 export type IssueToFixInput = z.infer<typeof IssueToFixInputSchema>;
 
 /**
+ * Options for connecting to the GitHub MCP server
+ */
+export interface ConnectionOptions {
+  /**
+   * Maximum number of retry attempts (default: 3)
+   */
+  maxRetries?: number;
+  /**
+   * Base delay in milliseconds for exponential backoff (default: 1000)
+   */
+  retryDelayMs?: number;
+  /**
+   * Maximum delay in milliseconds for exponential backoff (default: 10000)
+   */
+  maxDelayMs?: number;
+}
+
+/**
  * Create an MCPServerStdio instance for use with OpenAI Agent SDK
  */
 export function createGitHubMCPServer(): MCPServerStdio {
@@ -77,10 +95,58 @@ export class GitHubMCPClient {
   }
 
   /**
-   * Connect to the GitHub MCP server
+   * Check if an error is transient and should be retried
    */
-  async connect(): Promise<void> {
-    await this.client.connect(this.transport);
+  private isTransientError(error: unknown): boolean {
+    if (error instanceof Error) {
+      const message = error.message.toLowerCase();
+      // Check for specific transient error patterns
+      const transientPatterns = [
+        /econnrefused/i, // Connection refused
+        /econnreset/i, // Connection reset
+        /etimedout/i, // Timeout
+        /enetunreach/i, // Network unreachable
+        /ehostunreach/i, // Host unreachable
+        /socket hang up/i, // Socket errors
+        /network\s+error/i, // Generic network errors
+        /rate\s+limit/i, // Rate limiting
+        /timeout/i, // Generic timeout
+      ];
+      return transientPatterns.some((pattern) => pattern.test(message));
+    }
+    return false;
+  }
+
+  /**
+   * Sleep for a specified number of milliseconds
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Connect to the GitHub MCP server with retry logic
+   */
+  async connect(options?: ConnectionOptions): Promise<void> {
+    const maxRetries = options?.maxRetries ?? 3;
+    const baseDelay = options?.retryDelayMs ?? 1000;
+    const maxDelay = options?.maxDelayMs ?? 10000;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.client.connect(this.transport);
+        return;
+      } catch (error) {
+        if (!this.isTransientError(error) || attempt === maxRetries) {
+          throw error;
+        }
+        const delay = Math.min(
+          baseDelay * Math.pow(2, attempt - 1),
+          maxDelay
+        );
+        await this.sleep(delay);
+      }
+    }
   }
 
   /**
@@ -144,8 +210,10 @@ export class GitHubMCPClient {
 /**
  * Create and connect to the GitHub MCP server
  */
-export async function createGitHubMCPClient(): Promise<GitHubMCPClient> {
+export async function createGitHubMCPClient(
+  options?: ConnectionOptions
+): Promise<GitHubMCPClient> {
   const client = new GitHubMCPClient();
-  await client.connect();
+  await client.connect(options);
   return client;
 }
