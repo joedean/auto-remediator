@@ -243,6 +243,138 @@ describe("GitHubMCPClient", () => {
 
       expect(mockConnect).toHaveBeenCalledOnce();
     });
+
+    it("should succeed on first attempt when connection is successful", async () => {
+      mockConnect.mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      await client.connect({ maxRetries: 3, retryDelayMs: 100 });
+
+      expect(mockConnect).toHaveBeenCalledOnce();
+    });
+
+    it("should retry on transient ECONNREFUSED error and eventually succeed", async () => {
+      const error = new Error("connect ECONNREFUSED 127.0.0.1:8080");
+      mockConnect
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      await client.connect({ maxRetries: 3, retryDelayMs: 10 });
+
+      expect(mockConnect).toHaveBeenCalledTimes(3);
+    });
+
+    it("should retry on transient ETIMEDOUT error", async () => {
+      const error = new Error("connect ETIMEDOUT");
+      mockConnect.mockRejectedValueOnce(error).mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      await client.connect({ maxRetries: 3, retryDelayMs: 10 });
+
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it("should retry on network error", async () => {
+      const error = new Error("Network error occurred");
+      mockConnect.mockRejectedValueOnce(error).mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      await client.connect({ maxRetries: 3, retryDelayMs: 10 });
+
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it("should retry on rate limit error", async () => {
+      const error = new Error("Rate limit exceeded");
+      mockConnect.mockRejectedValueOnce(error).mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      await client.connect({ maxRetries: 3, retryDelayMs: 10 });
+
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it("should throw immediately on non-transient error", async () => {
+      const error = new Error("Invalid credentials");
+      mockConnect.mockRejectedValueOnce(error);
+
+      const client = new GitHubMCPClient();
+
+      await expect(
+        client.connect({ maxRetries: 3, retryDelayMs: 10 })
+      ).rejects.toThrow("Invalid credentials");
+      expect(mockConnect).toHaveBeenCalledOnce();
+    });
+
+    it("should throw after max retries exceeded", async () => {
+      const error = new Error("connect ECONNREFUSED");
+      mockConnect
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error);
+
+      const client = new GitHubMCPClient();
+
+      await expect(
+        client.connect({ maxRetries: 3, retryDelayMs: 10 })
+      ).rejects.toThrow("connect ECONNREFUSED");
+      expect(mockConnect).toHaveBeenCalledTimes(3);
+    });
+
+    it("should use default retry options when not specified", async () => {
+      const error = new Error("ECONNREFUSED");
+      mockConnect.mockRejectedValueOnce(error).mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      const startTime = Date.now();
+      await client.connect();
+      const elapsed = Date.now() - startTime;
+
+      // Should have delayed at least 1000ms (default baseDelay * 2^0)
+      expect(elapsed).toBeGreaterThanOrEqual(900); // Allow some margin
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it("should apply exponential backoff between retries", async () => {
+      const error = new Error("ECONNREFUSED");
+      mockConnect
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      const startTime = Date.now();
+      await client.connect({ maxRetries: 3, retryDelayMs: 100 });
+      const elapsed = Date.now() - startTime;
+
+      // Should have delayed: 100ms (first retry) + 200ms (second retry) = 300ms
+      expect(elapsed).toBeGreaterThanOrEqual(290); // Allow some margin
+      expect(mockConnect).toHaveBeenCalledTimes(3);
+    });
+
+    it("should handle case-insensitive error matching", async () => {
+      const error = new Error("Connection TIMEOUT occurred");
+      mockConnect.mockRejectedValueOnce(error).mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      await client.connect({ maxRetries: 3, retryDelayMs: 10 });
+
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
+    it("should not retry on non-Error objects", async () => {
+      const error = "string error";
+      mockConnect.mockRejectedValueOnce(error);
+
+      const client = new GitHubMCPClient();
+
+      await expect(
+        client.connect({ maxRetries: 3, retryDelayMs: 10 })
+      ).rejects.toBe("string error");
+      expect(mockConnect).toHaveBeenCalledOnce();
+    });
   });
 
   describe("close", () => {
@@ -376,6 +508,19 @@ describe("createGitHubMCPClient", () => {
 
     expect(client).toBeInstanceOf(GitHubMCPClient);
     expect(mockConnect).toHaveBeenCalledOnce();
+  });
+
+  it("should create and connect client with custom options", async () => {
+    const error = new Error("ECONNREFUSED");
+    mockConnect.mockRejectedValueOnce(error).mockResolvedValueOnce(undefined);
+
+    const client = await createGitHubMCPClient({
+      maxRetries: 5,
+      retryDelayMs: 50,
+    });
+
+    expect(client).toBeInstanceOf(GitHubMCPClient);
+    expect(mockConnect).toHaveBeenCalledTimes(2);
   });
 });
 
