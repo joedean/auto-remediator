@@ -375,6 +375,36 @@ describe("GitHubMCPClient", () => {
       ).rejects.toBe("string error");
       expect(mockConnect).toHaveBeenCalledOnce();
     });
+
+    it("should cap delay at maxDelayMs", async () => {
+      const error = new Error("ECONNREFUSED");
+      // Need many retries to trigger the cap
+      mockConnect
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(undefined);
+
+      const client = new GitHubMCPClient();
+      const startTime = Date.now();
+      await client.connect({
+        maxRetries: 5,
+        retryDelayMs: 1000,
+        maxDelayMs: 2000,
+      });
+      const elapsed = Date.now() - startTime;
+
+      // With maxDelay cap of 2000ms:
+      // Retry 1: min(1000 * 2^0, 2000) = 1000ms
+      // Retry 2: min(1000 * 2^1, 2000) = 2000ms
+      // Retry 3: min(1000 * 2^2, 2000) = 2000ms (capped)
+      // Retry 4: min(1000 * 2^3, 2000) = 2000ms (capped)
+      // Total: 1000 + 2000 + 2000 + 2000 = 7000ms
+      expect(elapsed).toBeGreaterThanOrEqual(6900); // Allow some margin
+      expect(elapsed).toBeLessThan(8000); // Should not exceed expected max
+      expect(mockConnect).toHaveBeenCalledTimes(5);
+    }, 10000); // 10 second timeout for this slow test
   });
 
   describe("close", () => {

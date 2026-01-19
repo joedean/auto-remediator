@@ -50,6 +50,10 @@ export interface ConnectionOptions {
    * Base delay in milliseconds for exponential backoff (default: 1000)
    */
   retryDelayMs?: number;
+  /**
+   * Maximum delay in milliseconds for exponential backoff (default: 10000)
+   */
+  maxDelayMs?: number;
 }
 
 /**
@@ -96,16 +100,19 @@ export class GitHubMCPClient {
   private isTransientError(error: unknown): boolean {
     if (error instanceof Error) {
       const message = error.message.toLowerCase();
-      // Check for common transient error codes and messages
-      return (
-        message.includes("econnrefused") ||
-        message.includes("econnreset") ||
-        message.includes("etimedout") ||
-        message.includes("network") ||
-        message.includes("socket") ||
-        message.includes("timeout") ||
-        message.includes("rate limit")
-      );
+      // Check for specific transient error patterns
+      const transientPatterns = [
+        /econnrefused/i, // Connection refused
+        /econnreset/i, // Connection reset
+        /etimedout/i, // Timeout
+        /enetunreach/i, // Network unreachable
+        /ehostunreach/i, // Host unreachable
+        /socket hang up/i, // Socket errors
+        /network\s+error/i, // Generic network errors
+        /rate\s+limit/i, // Rate limiting
+        /timeout/i, // Generic timeout
+      ];
+      return transientPatterns.some((pattern) => pattern.test(message));
     }
     return false;
   }
@@ -123,6 +130,7 @@ export class GitHubMCPClient {
   async connect(options?: ConnectionOptions): Promise<void> {
     const maxRetries = options?.maxRetries ?? 3;
     const baseDelay = options?.retryDelayMs ?? 1000;
+    const maxDelay = options?.maxDelayMs ?? 10000;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -132,7 +140,10 @@ export class GitHubMCPClient {
         if (!this.isTransientError(error) || attempt === maxRetries) {
           throw error;
         }
-        const delay = baseDelay * Math.pow(2, attempt - 1);
+        const delay = Math.min(
+          baseDelay * Math.pow(2, attempt - 1),
+          maxDelay
+        );
         await this.sleep(delay);
       }
     }
